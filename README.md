@@ -58,6 +58,20 @@ To open an interactive plot instead:
 python src/main.py
 ```
 
+## Phase 1 simulation result
+
+![Noise Cancler Phase 1 IMU filtering simulation](artifacts/simulation.png)
+
+The chart is generated from the deterministic 1.5-second, 400 Hz scenario used by this repository. The upper panel contrasts the synthetic flight path, motor-vibration-corrupted IMU input, and confidence-aware output. The lower panel shows the Gaussian trust weight dropping to zero at injected discontinuities.
+
+To regenerate the committed result after changing the algorithm, run:
+
+```bash
+python src/main.py --save artifacts/simulation.png --no-show
+```
+
+`artifacts/simulation.png` is intentionally allowed through `.gitignore` so the README always displays the exact reproducible chart associated with the current implementation.
+
 ## Test
 
 ```bash
