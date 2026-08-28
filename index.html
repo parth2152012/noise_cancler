@@ -12,6 +12,7 @@
   </head>
   <body>
     <main>
+      <nav aria-label="Primary navigation"><a class="brand" href="#top">noise<span>cancler</span></a><a href="#engine">The engine</a><a href="#architecture">Rust core</a><a href="#roadmap">Roadmap</a><a class="nav-cta" href="README.md">Project brief ↗</a></nav>
       <nav aria-label="Primary navigation"><a class="brand" href="#top">noise<span>cancler</span></a><a href="#engine">The engine</a><a href="#roadmap">Roadmap</a><a class="nav-cta" href="README.md">Project brief ↗</a></nav>
       <section class="hero" id="top">
         <div class="hero-copy"><p class="eyebrow">1517 Medici Grant application · Phase 1</p><h1>Make flight data<br /><em>trustworthy.</em></h1><p class="lede">A lightweight, real-time derivative filter that identifies physically implausible IMU vibration spikes—without the phase lag that destabilizes a quadcopter.</p><div class="actions"><a class="button" href="#engine">Explore the method <span>↓</span></a><a class="text-link" href="README.md">Read technical brief →</a></div></div>
@@ -19,6 +20,15 @@
       </section>
       <section class="statement"><p>Motor vibration should never be mistaken for a pilot command.</p><div class="statement-rule"></div><span>Built for the noisy reality of low-cost autonomous flight.</span></section>
       <section class="engine" id="engine"><div class="section-heading"><p class="eyebrow">01 / The approach</p><h2>Trust measurements<br />only when physics agrees.</h2></div><div class="steps"><article><span>01</span><h3>Sense</h3><p>A compact rolling pre-filter conditions each gyroscope sample at a 400 Hz control-loop rate.</p></article><article><span>02</span><h3>Differentiate</h3><p>Discrete first and second derivatives expose angular changes that cannot be explained by frame inertia.</p></article><article><span>03</span><h3>Weigh</h3><p>A Gaussian trust factor smoothly lowers confidence as jerk moves beyond a calibrated physical threshold.</p></article><article><span>04</span><h3>Predict</h3><p>During a spike, a localized kinematic estimate carries the state forward—then safely times out.</p></article></div></section>
+      <section class="architecture" id="architecture"><div class="architecture-copy"><p class="eyebrow">01.5 / Embedded-ready</p><h2>One engine.<br /><em>No runtime.</em></h2><p>The production path is a fixed-memory Rust library for bare-metal flight controllers. It uses <code>#![no_std]</code>, needs no heap allocation, and exposes both a compact output API and the live trust value for telemetry.</p><a class="text-link" href="README.md#rust-no_std-core">Read the integration guide →</a></div><pre aria-label="Rust code example"><code>#![no_std]
+
+let mut filter = DerivativeFilterEngine::new(
+    6_500.0, 0.0025
+);
+
+let result = filter.update_with_trust(gyro_x);
+// result.value  → corrected signal
+// result.trust  → measurement confidence</code></pre></section>
       <section class="proof"><div><p class="eyebrow">Why it matters</p><h2>Filtering without<br /><em>flying blind.</em></h2></div><div class="proof-copy"><p>Conventional moving averages trade noise reduction for delay. In a responsive flight-control loop, that delay can become an over-correction.</p><p>Noise Cancler scores the measurement itself, then blends it with a short-horizon prediction. The intended result: vibration resilience with near-zero added phase lag.</p><p class="note">A simulation prototype, not yet flight-certified hardware.</p></div></section>
       <section class="roadmap" id="roadmap"><div><p class="eyebrow">02 / Build in public</p><h2>From model to motor.</h2></div><ol><li><b>Phase 1</b><span>Deterministic math simulation and spike rejection.</span><i>Complete</i></li><li><b>Phase 2</b><span>Replay recorded IMU logs and tune thresholds.</span><i>Next</i></li><li><b>Phase 3</b><span>Integrate a no_std Rust implementation on embedded hardware.</span><i>Planned</i></li><li><b>Phase 4</b><span>Controlled tethered and outdoor flight validation.</span><i>Planned</i></li></ol></section>
       <section class="cta"><p class="eyebrow">An independent project by Parth Baburao Bavale</p><h2>Better signals.<br />Safer autonomy.</h2><a class="button light" href="README.md">Open the project README <span>→</span></a></section>

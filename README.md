@@ -32,6 +32,8 @@ When trust reaches zero for too many consecutive frames, a bounded timeout re-an
 .
 ├── index.html             # 1517 Medici-oriented project landing page
 ├── styles.css             # Responsive landing-page styling
+├── vercel.json            # Static Vercel deployment configuration
+├── src/lib.rs             # Embedded `#![no_std]` Rust filter library
 ├── src/main.py            # Filter engine, data generator, chart CLI
 └── tests/test_filter.py   # Unit and simulation checks
 ```
@@ -63,6 +65,40 @@ python -m pytest -q
 ```
 
 The checks cover clean initialization, trust collapse on a large discontinuity, parameter/input validation, and repeatable simulation alignment.
+
+## Rust `no_std` core
+
+The Rust implementation in `src/lib.rs` is the embedded path for this project. It is an allocator-free `#![no_std]` library: it uses fixed-size state, has no operating-system dependency, and does not pull in a math crate. The Gaussian confidence calculation uses a bounded internal `exp(-x)` approximation, which is sufficient for the engine's `[0, 1]` trust output and its `0.05` hard clamp.
+
+```rust
+use noise_cancler::DerivativeFilterEngine;
+
+let mut filter = DerivativeFilterEngine::new(6_500.0, 0.0025);
+let result = filter.update_with_trust(gyro_x);
+
+// Send result.value to the estimator and result.trust to telemetry.
+```
+
+Build and run the Rust unit tests with a host target:
+
+```bash
+cargo test
+cargo build --release
+```
+
+For a microcontroller, add this crate to a firmware project with the appropriate Rust target and HAL. The caller must schedule `update_with_trust` at the same constant period supplied as `delta_t`; it must also validate and tune `theta` against the actual sensor units and airframe.
+
+## Deploy the landing page
+
+The root landing page is a static Vercel site. Import the repository in Vercel, select the **Other** framework preset, and leave the build command and output directory empty. The included `vercel.json` enables clean static URLs.
+
+You can also deploy from the repository root with:
+
+```bash
+npx vercel --prod
+```
+
+The Python and Rust simulations are source code for development and validation; neither runs in the deployed static site.
 
 ## Design notes
 
