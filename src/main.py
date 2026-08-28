@@ -1,154 +1,139 @@
-import numpy as np
-import matplotlib.pyplot as plt
+"""Deterministic simulation for the zero-lag IMU derivative filter.
 
+Run ``python src/main.py --save artifacts/simulation.png`` to regenerate the
+evaluation chart, or omit ``--save`` to open an interactive plot.
+"""
 
-# =====================================================================
-# 1. CORE FILTER ENGINE (Matching your Rust bare-metal architecture)
-# =====================================================================
+from __future__ import annotations
+
+import argparse
+import math
+import random
+from dataclasses import dataclass, field
+from pathlib import Path
+
+@dataclass
 class DerivativeFilterEngine:
-    def __init__(self, theta=5500.0, delta_t=0.0025):
-        self.theta = theta  # Jerk threshold (Θ)
-        self.delta_t = delta_t  # 400 Hz refresh step (Δt)
-        self.buffer = [0.0, 0.0, 0.0]  # Sliding window: [y_k, y_k-1, y_k-2]
-        self.prev_v = 0.0  # Velocity (v_k-1)
-        self.prev_y_bar = 0.0  # Last safe state (y_bar_k-1)
-        self.consecutive_zeros = 0  # Emergency timeout tracker
+    """Reject implausible second-derivative events without adding phase lag.
 
-    def update(self, raw_input):
-        # --- STEP A: Low-Pass Pre-Filter ---
-        # 2-sample window to smooth high-frequency electronic jitter
-        filtered_y = (raw_input + self.buffer[0]) / 2.0
+    ``theta`` is the jerk threshold and ``delta_t`` is the sample interval in
+    seconds. Samples should use one consistent angular-rate unit.
+    """
 
-        # Cycle the sliding memory buffer
-        self.buffer[2] = self.buffer[1]
-        self.buffer[1] = self.buffer[0]
-        self.buffer[0] = filtered_y
+    theta: float = 5_500.0
+    delta_t: float = 0.0025
+    timeout_frames: int = 4
+    buffer: list[float] = field(default_factory=list, init=False)
+    prev_v: float = field(default=0.0, init=False)
+    prev_y_bar: float = field(default=0.0, init=False)
+    consecutive_zeros: int = field(default=0, init=False)
 
-        # --- STEP B: Discrete Time Derivatives ---
-        # First derivative (Angular Acceleration baseline)
-        v_k = (self.buffer[0] - self.buffer[1]) / self.delta_t
+    def __post_init__(self) -> None:
+        if self.theta <= 0 or self.delta_t <= 0:
+            raise ValueError("theta and delta_t must both be positive")
+        if self.timeout_frames < 0:
+            raise ValueError("timeout_frames cannot be negative")
 
-        # Second derivative (Angular Jerk baseline)
-        a_k = (self.buffer[0] - 2.0 * self.buffer[1] + self.buffer[2]) / (
-            self.delta_t**2
-        )
+    def update(self, raw_input: float) -> tuple[float, float]:
+        """Process one sample and return ``(filtered_value, trust_weight)``."""
+        if not math.isfinite(raw_input):
+            raise ValueError("raw_input must be finite")
 
-        # --- STEP C: Dynamic Gaussian Trust Factor (W) ---
-        jerk_magnitude = abs(a_k)
-        ratio = jerk_magnitude / self.theta
-        w = np.exp(-1.0 * (ratio**2))
+        # Warm up from the first sensor value rather than an artificial zero.
+        if not self.buffer:
+            self.buffer = [float(raw_input)] * 3
+            self.prev_y_bar = float(raw_input)
+            return float(raw_input), 1.0
 
-        # --- STEP D: Kinematic Prediction & Bounded Timeout ---
-        if w < 0.05:
-            w = 0.0
+        # A two-sample pre-filter suppresses electronic jitter before the
+        # derivative calculation. buffer is [y_k-1, y_k-2, y_k-3].
+        filtered_y = (float(raw_input) + self.buffer[0]) / 2.0
+        y_k_1, y_k_2 = self.buffer[0], self.buffer[1]
+        v_k = (filtered_y - y_k_1) / self.delta_t
+        jerk_k = (filtered_y - 2.0 * y_k_1 + y_k_2) / self.delta_t**2
+        self.buffer = [filtered_y, y_k_1, y_k_2]
+
+        ratio = abs(jerk_k) / self.theta
+        trust = math.exp(-(ratio * ratio))
+        if trust < 0.05:
+            trust = 0.0
             self.consecutive_zeros += 1
         else:
             self.consecutive_zeros = 0
 
-        # Localized Taylor series trajectory projection
-        y_hat_k = self.prev_y_bar + (self.prev_v * self.delta_t)
+        predicted = self.prev_y_bar + (self.prev_v * self.delta_t)
+        if self.consecutive_zeros > self.timeout_frames:
+            predicted = filtered_y
 
-        # Emergency Timeout Fallback (Hard boundary to stop prediction drift)
-        if self.consecutive_zeros > 4:
-            y_hat_k = filtered_y
-
-        # Convex Blend Output
-        y_bar_k = (w * filtered_y) + ((1.0 - w) * y_hat_k)
-
-        # Cache states for step k+1
+        output = trust * filtered_y + (1.0 - trust) * predicted
         self.prev_v = v_k
-        self.prev_y_bar = y_bar_k
+        self.prev_y_bar = output
+        return output, trust
 
-        return y_bar_k, w
+
+def generate_flight_data(duration: float = 1.5, fs: int = 400, seed: int = 42):
+    """Return reproducible synthetic flight, noisy IMU, and time samples."""
+    if duration <= 0 or fs <= 0:
+        raise ValueError("duration and fs must be positive")
+    rng = random.Random(seed)
+    sample_count = int(duration * fs)
+    time = [index / fs for index in range(sample_count)]
+    true_path = [45.0 * math.sin(2 * math.pi * 1.5 * value) for value in time]
+    motor_noise = [12.0 * math.sin(2 * math.pi * 166.0 * value) for value in time]
+    raw_stream = [path + noise + rng.gauss(0, 3.5) for path, noise in zip(true_path, motor_noise)]
+    for start, end, offset in ((180, 183, 180.0), (420, 423, -220.0)):
+        if start < len(raw_stream):
+            for index in range(start, min(end, len(raw_stream))):
+                raw_stream[index] += offset
+    return time, true_path, raw_stream
 
 
-# =====================================================================
-# 2. FLIGHT DATA GENERATION (Simulating a real 5-inch quadcopter environment)
-# =====================================================================
-np.random.seed(42)  # Deterministic evaluation
-duration = 1.5  # Seconds
-fs = 400  # 400 Hz Sampling rate
-t = np.linspace(0, duration, int(fs * duration), endpoint=False)
+def run_simulation(duration: float = 1.5, fs: int = 400):
+    """Run the filter and return time, ground truth, raw data, output, trust."""
+    time, true_path, raw_stream = generate_flight_data(duration, fs)
+    engine = DerivativeFilterEngine(theta=6_500.0, delta_t=1.0 / fs)
+    results = [engine.update(sample) for sample in raw_stream]
+    output, trust = map(list, zip(*results))
+    return time, true_path, raw_stream, output, trust
 
-# Intentional Pilot Input: Smooth, clean 1.5 Hz flight roll maneuver
-true_flight_path = 45.0 * np.sin(2 * np.pi * 1.5 * t)
 
-# 10,000+ RPM Motor Vibrations (Structural noise modeled at ~166Hz + random noise)
-motor_vibration_hz = 166.0
-motor_harmonics = 12.0 * np.sin(2 * np.pi * motor_vibration_hz * t)
-sensor_noise = np.random.normal(0, 3.5, len(t))
+def create_figure():
+    """Build the evaluation figure without displaying it."""
+    import matplotlib.pyplot as plt
 
-# Combine to create raw compromised IMU feedback
-raw_imu_stream = true_flight_path + motor_harmonics + sensor_noise
+    time, true_path, raw_stream, output, trust = run_simulation()
+    figure, (signal_ax, trust_ax) = plt.subplots(
+        2, 1, figsize=(13, 8), sharex=True, gridspec_kw={"height_ratios": [3, 1]}
+    )
+    signal_ax.plot(time, raw_stream, label="Raw IMU (motor noise + spikes)", color="#e63946", alpha=0.5)
+    signal_ax.plot(time, output, label="Derivative filter output", color="#1d3557", linewidth=2.5)
+    signal_ax.plot(time, true_path, label="Synthetic ground truth", color="#457b9d", linestyle="--")
+    signal_ax.set(title="Phase 1: real-time IMU filtering simulation", ylabel="Angular rate (deg/s)")
+    signal_ax.legend(loc="upper right")
+    trust_ax.fill_between(time, trust, color="#2a9d8f", alpha=0.3, label="Sensor trust")
+    trust_ax.set(ylim=(-0.1, 1.1), xlabel="Time (seconds)", ylabel="Trust (W)")
+    trust_ax.legend(loc="upper right")
+    for axis in (signal_ax, trust_ax):
+        axis.grid(True, linestyle=":", alpha=0.6)
+    figure.tight_layout()
+    return figure
 
-# Inject mathematically "impossible" mechanical/electronic glitch shocks
-raw_imu_stream[180:183] += 180.0  # Massive positive spike
-raw_imu_stream[420:423] -= 220.0  # Massive negative spike
 
-# =====================================================================
-# 3. RUN SIMULATION LOOP
-# =====================================================================
-engine = DerivativeFilterEngine(theta=6500.0, delta_t=1.0 / fs)
-clean_output = []
-trust_weights = []
+def main() -> None:
+    import matplotlib.pyplot as plt
 
-for sample in raw_imu_stream:
-    filtered_val, current_w = engine.update(sample)
-    clean_output.append(filtered_val)
-    trust_weights.append(current_w)
+    parser = argparse.ArgumentParser(description="Run the IMU filter simulation.")
+    parser.add_argument("--save", type=Path, help="write the chart to this path")
+    parser.add_argument("--no-show", action="store_true", help="do not open a plot window")
+    args = parser.parse_args()
+    figure = create_figure()
+    if args.save:
+        args.save.parent.mkdir(parents=True, exist_ok=True)
+        figure.savefig(args.save, dpi=160, bbox_inches="tight")
+        print(f"Saved simulation chart to {args.save}")
+    if not args.no_show:
+        plt.show()
 
-# =====================================================================
-# 4. DASHBOARD PRESENTATION FOR INTERVIEW JUDGES
-# =====================================================================
-fig, (ax1, ax2) = plt.subplots(
-    2, 1, figsize=(13, 8), sharex=True, gridspec_kw={"height_ratios": [3, 1]}
-)
 
-# Top Plot: Signal Comparison
-ax1.plot(
-    t,
-    raw_imu_stream,
-    label="Raw IMU Sensor (Motor Noise + Spikes)",
-    color="#E63946",
-    alpha=0.5,
-    linewidth=1.2,
-)
-ax1.plot(
-    t,
-    clean_output,
-    label="Cleaned Flight Path (Our Filter Engine)",
-    color="#1D3557",
-    linewidth=2.5,
-)
-ax1.plot(
-    t,
-    true_flight_path,
-    label="True Ground Physical Position",
-    color="#457B9D",
-    linestyle="--",
-    alpha=0.8,
-)
-
-ax1.set_title(
-    "Phase 1 Simulation: Real-Time IMU Mathematical Filtering Verification",
-    fontsize=14,
-    fontweight="bold",
-    pad=15,
-)
-ax1.set_ylabel("Angular Rate / Attitude (deg/s)", fontsize=11)
-ax1.legend(loc="upper right", frameon=True, facecolor="white", edgecolor="none")
-ax1.grid(True, linestyle=":", alpha=0.6)
-
-# Bottom Plot: Dynamic Gaussian Trust Weight tracking
-ax2.fill_between(
-    t, trust_weights, color="#2A9D8F", alpha=0.3, label="Sensor Trust Factor (W)"
-)
-ax2.plot(t, trust_weights, color="#2A9D8F", linewidth=1.5)
-ax2.set_ylim(-0.1, 1.1)
-ax2.set_ylabel("Trust Weight (W)", fontsize=11)
-ax2.set_xlabel("Time Execution Window (Seconds)", fontsize=11)
-ax2.grid(True, linestyle=":", alpha=0.6)
-ax2.legend(loc="upper right")
-
-plt.tight_layout()
-plt.show()
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,7 @@
+/target/
+__pycache__/
+*.py[cod]
+# Keep the reproducible Phase 1 chart in version control, but do not retain
+# other locally generated plots or experiment outputs.
+/artifacts/*
+!/artifacts/simulation.png
