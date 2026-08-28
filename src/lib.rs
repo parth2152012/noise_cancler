@@ -1,5 +1,6 @@
 #![no_std]
 //! A fixed-memory, confidence-aware IMU derivative filter.
+//! Under testing 
 //!
 //! This crate is designed for a regularly clocked bare-metal control loop.
 //! It has no allocator, no operating-system dependencies, and no external
